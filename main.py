@@ -5,7 +5,6 @@ from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 import google.generativeai as genai
-from io import BytesIO
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -15,6 +14,11 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PORT = int(os.getenv("PORT", 8080))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+
+# --- НАСТРОЙКА БЕЛОГО СПИСКА (СПИСОК ТЕХ, КОМУ МОЖНО) ---
+# Замените числа ниже на свой ID (и ID друзей, если нужно, через запятую)
+ALLOWED_USERS = [1240110156] 
+# --------------------------------------------------------
 
 WEBHOOK_PATH = f"/bot/{BOT_TOKEN}"
 WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
@@ -26,7 +30,6 @@ dp = Dispatcher()
 # Настройка Gemini API
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Используем модель, которая отлично понимает и текст, и картинки
     model = genai.GenerativeModel('gemini-3.5-flash')
     logging.info("Gemini успешно настроен.")
 except Exception as e:
@@ -34,29 +37,29 @@ except Exception as e:
 
 @dp.message()
 async def handle_message(message: Message):
-    """Единый обработчик для текстовых сообщений и фото"""
-    # Собираем запрос к Gemini
+    """Единый обработчик для текстовых сообщений и фото с проверкой доступа"""
+    
+    # ПРОВЕРКА: Если ID пользователя нет в списке разрешенных
+    if message.from_user.id not in ALLOWED_USERS:
+        logging.warning(f"Попытка доступа от постороннего! ID: {message.from_user.id}, Username: @{message.from_user.username}")
+        await message.answer("Извините, этот бот приватный. У вас нет доступа к Gemini. 🔒")
+        return # Останавливаем функцию, дальше код выполняться не будет
+
+    # Дальше идет ваша стандартная рабочая логика бота...
     prompt_parts = []
     
-    # 1. Если пользователь прикрепил фото
     if message.photo:
         try:
             await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-            
-            # Берем самое лучшее качество фотографии (последний элемент в списке)
             photo = message.photo[-1]
-            
-            # Скачиваем фото в память как массив байт (BytesIO)
             photo_file = await message.bot.download(photo)
             photo_bytes = photo_file.read()
             
-            # Добавляем изображение в структуру запроса для Gemini
             prompt_parts.append({
                 "mime_type": "image/jpeg",
                 "data": photo_bytes
             })
             
-            # Если к фото прикреплен текст вопроса
             if message.caption:
                 prompt_parts.append(message.caption)
             else:
@@ -67,20 +70,15 @@ async def handle_message(message: Message):
             await message.answer("Не удалось загрузить вашу картинку.")
             return
 
-    # 2. Если это обычное текстовое сообщение
     elif message.text:
         prompt_parts.append(message.text)
         
     else:
-        # Если пользователь отправил стикер, аудио или файл, которые мы пока не обрабатываем
         await message.answer("Я умею обрабатывать только текст и фотографии! 📸")
         return
 
-    # Отправляем запрос в нейросеть
     try:
         await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-        
-        # Передаем массив данных (там может быть и картинка, и текст вместе)
         response = model.generate_content(prompt_parts)
         
         if response.text:
