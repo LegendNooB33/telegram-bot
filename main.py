@@ -25,7 +25,7 @@ dp = Dispatcher()
 # Настройка Gemini API
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     logging.info("Gemini успешно настроен.")
 except Exception as e:
     logging.error(f"Ошибка настройки Gemini: {e}")
