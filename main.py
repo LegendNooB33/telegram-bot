@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-from google import genai
+import google.generativeai as genai
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -23,51 +23,41 @@ WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Корректная инициализация для ключей Vertex AI (начинающихся на AQ...)
-# Если у вас корпоративный аккаунт Google Cloud, укажите ваш Project ID и локацию (например, us-central1)
+# Настройка Gemini API
 try:
-    gemini_client = genai.Client(
-        api_key=GEMINI_API_KEY,
-        # location="us-central1" # Раскомментируйте и укажите регион, если Vertex выдаст ошибку локации
-    )
-    logging.info("Gemini Client успешно инициализирован.")
+    genai.configure(api_key=GEMINI_API_KEY)
+    # Используем модель gemini-2.5-flash
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    logging.info("Gemini успешно настроен.")
 except Exception as e:
-    logging.error(f"Ошибка инициализации Gemini Client: {e}")
+    logging.error(f"Ошибка настройки Gemini: {e}")
 
 @dp.message()
 async def handle_message(message: Message):
-    """
-    Обработчик сообщений. Запросы к API вынесены в фоновую задачу,
-    чтобы бот мгновенно отвечал Telegram '200 OK' и не дублировал сообщения.
-    """
+    """Мгновенно принимает сообщение, чтобы избежать дубликатов от Telegram"""
     if not message.text:
         return
-
-    # Запускаем генерацию ответа асинхронно в фоне
+    # Передаем обработку в фоновую задачу
     asyncio.create_task(generate_and_send_response(message))
 
 async def generate_and_send_response(message: Message):
     try:
-        # Отправляем статус "печатает...", чтобы пользователь видел активность
+        # Показываем статус "печатает..."
         await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         
-        # Запрос к актуальной быстрой модели
-        response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=message.text,
-        )
+        # Запрос к нейросети (выполняется асинхронно в потоке, чтобы не вешать сервер)
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, model.generate_content, message.text)
         
         if response.text:
             await message.answer(response.text)
         else:
-            await message.answer("Нейросеть вернула пустой ответ.")
-            
+            await message.answer("Нейросеть прислала пустой ответ.")
     except Exception as e:
         logging.error(f"Ошибка при генерации текста: {e}")
-        await message.answer("Извините, не удалось обработать ваш запрос к Gemini.")
+        await message.answer("Не удалось получить ответ от нейросети.")
 
 async def on_startup(bot: Bot):
-    """Действие при запуске сервера: регистрируем вебхук в Telegram"""
     logging.info(f"Установка вебхука на URL: {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
 
@@ -75,7 +65,6 @@ async def main():
     dp.startup.register(on_startup)
     app = web.Application()
     
-    # Конфигурируем обработчик вебхуков
     webhook_requests_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
