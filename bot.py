@@ -1,12 +1,11 @@
 import os
-import asyncio
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from openai import OpenAI
 from flask import Flask
 from threading import Thread
 
-# Фальшивый веб-сервер для Render
+# ===== Веб-сервер для Render =====
 app_web = Flask(__name__)
 
 @app_web.route('/')
@@ -16,36 +15,51 @@ def home():
 def run_web():
     app_web.run(host='0.0.0.0', port=8080)
 
-# Запускаем веб-сервер в фоновом потоке
 Thread(target=run_web).start()
 
-# Ключи из переменных окружения
+# ===== Ключи из переменных окружения =====
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+PROXY_KEY = os.environ.get("PROXY_API_KEY")
+PROXY_URL = os.environ.get("PROXY_URL")  # URL продавца
 
+if not TOKEN or not PROXY_KEY or not PROXY_URL:
+    print("❌ Ошибка: Проверьте переменные окружения")
+    exit(1)
+
+# ===== Команда /start =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот на ChatGPT. Просто напиши мне что-нибудь :)")
+    await update.message.reply_text(
+        "👋 Привет! Я бот через прокси-сервер.\n"
+        "Задавай любые вопросы — я отвечу!"
+    )
 
-async def chatgpt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
+# ===== Текст =====
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": user_message}]
+        response = requests.post(
+            f"{PROXY_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {PROXY_KEY}"},
+            json={
+                "model": "gemini-2.0-flash-exp",
+                "messages": [{"role": "user", "content": user_text}]
+            },
+            timeout=30
         )
-        reply = response.choices[0].message.content
-        await update.message.reply_text(reply[:4000])
+        if response.status_code == 200:
+            reply = response.json()["choices"][0]["message"]["content"]
+            await update.message.reply_text(reply[:4000])
+        else:
+            await update.message.reply_text(f"❌ Ошибка API: {response.status_code}")
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+# ===== Запуск =====
 def main():
-    if not TOKEN or not os.environ.get("OPENAI_API_KEY"):
-        print("Ошибка: Не найдены ключи в переменных окружения!")
-        return
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chatgpt))
-    print("Бот запущен на новой версии OpenAI!")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    print("✅ Бот запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
