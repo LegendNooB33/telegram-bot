@@ -1,7 +1,6 @@
 import os
 import logging
-import asyncio
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
@@ -26,7 +25,6 @@ dp = Dispatcher()
 # Настройка Gemini API
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    # Используем модель gemini-2.5-flash
     model = genai.GenerativeModel('gemini-2.5-flash')
     logging.info("Gemini успешно настроен.")
 except Exception as e:
@@ -34,54 +32,50 @@ except Exception as e:
 
 @dp.message()
 async def handle_message(message: Message):
-    """Мгновенно принимает сообщение, чтобы избежать дубликатов от Telegram"""
+    """Принимает сообщение и сразу отвечает в Telegram"""
     if not message.text:
         return
-    # Передаем обработку в фоновую задачу
-    asyncio.create_task(generate_and_send_response(message))
-
-async def generate_and_send_response(message: Message):
+        
     try:
-        # Показываем статус "печатает..."
+        # Отправляем статус "печатает..."
         await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         
-        # Запрос к нейросети (выполняется асинхронно в потоке, чтобы не вешать сервер)
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(None, model.generate_content, message.text)
+        # Получаем ответ от Gemini напрямую
+        response = model.generate_content(message.text)
         
         if response.text:
             await message.answer(response.text)
         else:
-            await message.answer("Нейросеть прислала пустой ответ.")
+            await message.answer("Нейросеть вернула пустой ответ.")
     except Exception as e:
         logging.error(f"Ошибка при генерации текста: {e}")
-        await message.answer("Не удалось получить ответ от нейросети.")
+        await message.answer("Извините, не удалось обработать ваш запрос.")
 
 async def on_startup(bot: Bot):
+    """Установка вебхука при старте приложения"""
     logging.info(f"Установка вебхука на URL: {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
 
-async def main():
+def main():
+    # Регистрируем событие запуска
     dp.startup.register(on_startup)
+    
+    # Создаем стандартное aiohttp приложение
     app = web.Application()
     
+    # Настраиваем официальный обработчик вебхуков от aiogram
     webhook_requests_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
     )
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    
+    # Связываем aiogram и aiohttp
     setup_application(app, dp, bot=bot)
     
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(app, "0.0.0.0", PORT)
-    await site.start()
-    
-    logging.info(f"Бот успешно запущен на порту {PORT}")
-    await asyncio.Event().wait()
+    # Важно: Запускаем приложение через стандартный run_app, который идеально поддерживается Render
+    logging.info(f"Запуск вебхука на порту {PORT}")
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Бот остановлен.")
+    main()
