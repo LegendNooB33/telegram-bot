@@ -1,61 +1,53 @@
 import os
+import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from google import genai
-from flask import Flask
-from threading import Thread
 
-# ===== Веб-сервер для Render =====
-app_web = Flask(__name__)
-
-@app_web.route('/')
-def home():
-    return "Бот на Gemini работает!"
-
-def run_web():
-    app_web.run(host='0.0.0.0', port=8080)
-
-Thread(target=run_web).start()
-
-# ===== Ключи =====
+# ===== ТВОИ КЛЮЧИ (берутся из переменных окружения Render) =====
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")  # Твой ключ AQ.Ab8...
+PROXY_KEY = os.environ.get("PROXY_API_KEY")
+PROXY_URL = os.environ.get("PROXY_URL")  # Например: https://api.proxy-gemini.com
 
-if not TOKEN or not GEMINI_KEY:
-    print("❌ Ошибка: Проверьте переменные TELEGRAM_TOKEN и GEMINI_API_KEY")
+if not TOKEN or not PROXY_KEY or not PROXY_URL:
+    print("❌ Ошибка: Проверьте переменные окружения")
     exit(1)
 
-# Инициализация клиента Gemini
-client = genai.Client(api_key=GEMINI_KEY)
-
-# ===== Команда /start =====
+# ===== КОМАНДА /start =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Привет! Я бот на **Gemini 3.6 Flash**.\n"
-        "Задавай любые вопросы — я отвечу!"
-    )
+    await update.message.reply_text("👋 Привет! Я бот. Задай мне любой вопрос.")
 
-# ===== Текст =====
+# ===== ОБРАБОТЧИК ТЕКСТА (без дублей) =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
+
     try:
-        # Используем ТОЧНО ТАКОЙ ЖЕ вызов, как в примере продавца
-        interaction = client.interactions.create(
-            model="gemini-3.6-flash",
-            input=user_text
+        response = requests.post(
+            f"{PROXY_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {PROXY_KEY}"},
+            json={
+                "model": "gemini-2.0-flash-exp",
+                "messages": [{"role": "user", "content": user_text}]
+            },
+            timeout=30
         )
-        reply = interaction.output_text
-        await update.message.reply_text(reply[:4000])
+
+        if response.status_code == 200:
+            reply = response.json()["choices"][0]["message"]["content"]
+            await update.message.reply_text(reply[:4000])
+        else:
+            await update.message.reply_text(f"❌ Ошибка API: {response.status_code}")
+
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-# ===== Запуск =====
+# ===== ЗАПУСК БОТА (ТОЛЬКО POLLING, БЕЗ ВЕБХУКОВ) =====
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("✅ Бот на Gemini 3.6 Flash запущен!")
-    app.run_polling()
+
+    print("✅ Бот запущен и слушает сообщения...")
+    app.run_polling()  # <-- Только polling, без Flask!
 
 if __name__ == "__main__":
     main()
