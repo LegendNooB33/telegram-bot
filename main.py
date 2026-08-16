@@ -7,7 +7,7 @@ import psycopg2
 from google import genai
 from google.genai import types
 
-# 1. Инициализация Flask-сервера для прохождения проверок порта Render
+# 1. Инициализация Flask-сервера для Render
 app = Flask(__name__)
 
 @app.route('/')
@@ -18,19 +18,16 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# 2. Считывание конфигурации Telegram и Gemini
+# 2. Настройки Telegram и Gemini
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
-
-# ОБНОВЛЕНО: Переход на актуальную флагманскую модель поколения Gemini 3
 MODEL_NAME = "gemini-3.7-flash"
 
-# 3. Пнямое подключение к Supabase по отдельным параметрам
+# 3. Подключение к Supabase
 def get_db_connection():
-    """Подключение к базе данных без использования строки URL."""
     return psycopg2.connect(
         host=os.environ.get("DB_HOST"),
         port=int(os.environ.get("DB_PORT", 6543)),
@@ -40,7 +37,6 @@ def get_db_connection():
     )
 
 def init_db():
-    """Создание таблицы для хранения истории диалогов, если её нет в Supabase."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -54,7 +50,6 @@ def init_db():
     conn.close()
 
 def load_chat_history(user_id):
-    """Загрузка истории из Supabase и преобразование в объекты типов Gemini SDK."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT history_json FROM user_history WHERE user_id = %s;", (user_id,))
@@ -62,21 +57,18 @@ def load_chat_history(user_id):
     cursor.close()
     conn.close()
     
-    if not row:
+    if not row or not row[0]:
         return []
         
     try:
-        # Извлекаем JSON-строку из кортежа результата БД (строка лежит в первом элементе)
+        # ИСПРАВЛЕНО: берём строку из первого элемента кортежа row[0]
         raw_list = json.loads(row[0])
-        # Восстанавливаем объекты Content, необходимые для работы чата Gemini
         return [types.Content(**content_dict) for content_dict in raw_list]
     except Exception as e:
         print(f"Ошибка парсинга истории для пользователя {user_id}: {e}")
         return []
 
 def save_chat_history(user_id, history_objects):
-    """Преобразование объектов Gemini в JSON-строку и сохранение в Supabase."""
-    # model_dump() переводит Pydantic-объекты Google SDK в обычные словари Python
     serializable_history = [content.model_dump() for content in history_objects]
     history_json = json.dumps(serializable_history)
     
@@ -92,65 +84,55 @@ def save_chat_history(user_id, history_objects):
     cursor.close()
     conn.close()
 
-# 4. Обработчики команд Telegram бота
+# 4. Команды бота
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     user_id = message.from_user.id
-    # Очищаем историю принудительно при старте нового диалога
     save_chat_history(user_id, [])
-    bot.reply_to(message, "Привет! Я обновленный бот на базе Gemini 3.7 Flash с бесконечной памятью. Задай мне любой вопрос!")
+    bot.reply_to(message, "Привет! Я бот на базе Gemini 3.7 с памятью в Supabase. Спроси меня о чём-нибудь!")
 
 @bot.message_handler(commands=['clear'])
 def clear_memory(message):
     user_id = message.from_user.id
     save_chat_history(user_id, [])
-    bot.reply_to(message, "История нашего общения успешно очищена из базы данных!")
+    bot.reply_to(message, "История нашего общения успешно очищена!")
 
-# 5. Обработка всех текстовых сообщений (Диалог с памятью)
+# 5. Обработка сообщений
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     user_id = message.from_user.id
     
     try:
-        # Показываем анимацию "Бот печатает..."
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # Шаг 1: Загружаем прошлые реплики из базы данных Supabase
+        # 1. Загружаем историю
         history = load_chat_history(user_id)
         
-        # Шаг 2: Инициализируем сессию чата Gemini с подгруженной историей
+        # 2. Создаем сессию чата
         chat = ai_client.chats.create(
             model=MODEL_NAME,
             history=history
         )
         
-        # Шаг 3: Отправляем новое сообщение модели
+        # 3. Отправляем сообщение
         response = chat.send_message(message.text)
         
-        # Шаг 4: Получаем от Gemini обновленную полную историю реплик
+        # 4. Сохраняем обновленную историю
         updated_history = chat.get_history()
-        
-        # Шаг 5: Сохраняем обновленный контекст обратно в Supabase
         save_chat_history(user_id, updated_history)
         
-        # Отвечаем пользователю в Telegram
         bot.reply_to(message, response.text)
         
     except Exception as e:
         bot.reply_to(message, f"Произошла ошибка при обработке нейросетью: {str(e)}")
 
-# 6. Главная точка входа приложения
+# 6. Старт
 if __name__ == "__main__":
-    # Проверяем и создаем структуру таблиц в Supabase
     init_db()
-    
-    # Запускаем Flask веб-сервер в фоновом потоке
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # Принудительное удаление старых вебхуков для исключения конфликтов
     print("Удаляем конфликтующие вебхуки Telegram...")
     bot.delete_webhook(drop_pending_updates=True)
     
     print("Бот успешно запущен на модели Gemini 3.7 и слушает Telegram...")
-    # Старт бесконечного опроса Telegram
     bot.infinity_polling()
