@@ -13,18 +13,17 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Приватный бот Gemini + Llama + DeepSeek активен!", 200
+    return "Приватный мультимодельный бот Gemini + Llama + DeepSeek активен и исправлен!", 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# Считывание токенов и ID администратора
+# Считывание токенов и ID администратора из настроек Render
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# Получаем ID админа. Если не задан, ставим 0, чтобы никто не зашел случайно
 try:
     ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 except ValueError:
@@ -105,7 +104,6 @@ def get_model_menu():
 # --- ЗАЩИТА: Обработчик для посторонних пользователей ---
 @bot.message_handler(func=lambda message: not is_admin(message))
 def handle_unauthorized(message):
-    # Если пишет чужой человек, бот скрывает клавиатуру меню и вежливо отказывает
     reply_markup = telebot.types.ReplyKeyboardRemove()
     bot.reply_to(message, "🔒 Извините, этот бот является приватным. Доступ заблокирован.", reply_markup=reply_markup)
 
@@ -167,14 +165,16 @@ def handle_message(message):
                 model=MODEL_LLAMA,
                 messages=history
             )
-            ai_text = completion.choices.message.content
+            # ФИКС: Добавлен индекс [0] для правильного извлечения ответа из списка
+            ai_text = completion.choices[0].message.content
             
         elif chosen_model == 'deepseek':
             completion = groq_client.chat.completions.create(
                 model=MODEL_DEEPSEEK,
                 messages=history
             )
-            ai_text = completion.choices.message.content
+            # ФИКС: Добавлен индекс [0] для правильного извлечения ответа из списка
+            ai_text = completion.choices[0].message.content
         
         history.append({"role": "assistant", "content": ai_text})
         save_user_profile(user_id, chosen_model, history)
