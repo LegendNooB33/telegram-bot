@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import threading
 from flask import Flask
 import telebot
@@ -12,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Бот Gemini активен, подключен к Supabase, работает на Gemini 3.7!", 200
+    return "Бот Gemini активен, подключен к Supabase, баг байтов исправлен!", 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -25,6 +26,24 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-3.7-flash"
+
+# ИСПРАВЛЕНИЕ: Кастомный кодировщик для обхода бага bytes в Gemini 3
+class GeminiJsonEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, bytes):
+            # Если находим байты (thought_signature), безопасно кодируем их в строку Base64
+            return base64.b64encode(obj).decode('utf-8')
+        return super().default(obj)
+
+# ИСПРАВЛЕНИЕ: Функция восстановления байтов при чтении из БД
+def bytes_decoder(dct):
+    for key, value in dct.items():
+        if isinstance(value, str) and key == "thought_signature":
+            try:
+                dct[key] = base64.b64decode(value.encode('utf-8'))
+            except Exception:
+                pass
+    return dct
 
 # 3. Подключение к Supabase
 def get_db_connection():
@@ -61,8 +80,8 @@ def load_chat_history(user_id):
         return []
         
     try:
-        # ИСПРАВЛЕНО: берём строку из первого элемента кортежа row[0]
-        raw_list = json.loads(row[0])
+        # ИСПРАВЛЕНО: Читаем строку из кортежа и декодируем Base64 обратно в байты
+        raw_list = json.loads(row[0], object_hook=bytes_decoder)
         return [types.Content(**content_dict) for content_dict in raw_list]
     except Exception as e:
         print(f"Ошибка парсинга истории для пользователя {user_id}: {e}")
@@ -70,7 +89,8 @@ def load_chat_history(user_id):
 
 def save_chat_history(user_id, history_objects):
     serializable_history = [content.model_dump() for content in history_objects]
-    history_json = json.dumps(serializable_history)
+    # ИСПРАВЛЕНО: Используем наш кастомный кодировщик GeminiJsonEncoder
+    history_json = json.dumps(serializable_history, cls=GeminiJsonEncoder)
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -89,7 +109,7 @@ def save_chat_history(user_id, history_objects):
 def send_welcome(message):
     user_id = message.from_user.id
     save_chat_history(user_id, [])
-    bot.reply_to(message, "Привет! Я бот на базе Gemini 3.7 с памятью в Supabase. Спроси меня о чём-нибудь!")
+    bot.reply_to(message, "Привет! Я бот на базе Gemini 3.7. Баг с памятью полностью исправлен. Спроси меня о чём-нибудь!")
 
 @bot.message_handler(commands=['clear'])
 def clear_memory(message):
