@@ -13,16 +13,22 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Бот-мультимодель активен (Gemini + Llama + DeepSeek)!", 200
+    return "Приватный бот Gemini + Llama + DeepSeek активен!", 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# Считывание токенов
+# Считывание токенов и ID администратора
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+# Получаем ID админа. Если не задан, ставим 0, чтобы никто не зашел случайно
+try:
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
+except ValueError:
+    ADMIN_ID = 0
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -31,9 +37,13 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # Названия моделей
 MODEL_GEMINI = "gemini-3.5-flash"
 MODEL_LLAMA = "llama-3.3-70b-versatile"
-MODEL_DEEPSEEK = "deepseek-r1-distill-llama-70b"  # Тот самый DeepSeek R1 на мощностях Groq!
+MODEL_DEEPSEEK = "deepseek-r1-distill-llama-70b"
 
-# 2. База данных Supabase (Универсальная история)
+# Функция-фильтр для проверки, что пишет именно создатель бота
+def is_admin(message):
+    return message.from_user.id == ADMIN_ID
+
+# 2. База данных Supabase
 def get_db_connection():
     return psycopg2.connect(
         host=os.environ.get("DB_HOST"),
@@ -64,7 +74,6 @@ def get_user_profile(user_id):
     row = cursor.fetchone()
     cursor.close()
     conn.close()
-    
     if not row:
         return 'gemini', []
     return row[0], json.loads(row[1])
@@ -82,31 +91,37 @@ def save_user_profile(user_id, model_name, history_list):
     cursor.close()
     conn.close()
 
-# 3. Кнопки меню Telegram (Теперь 3 модели!)
+# 3. Кнопки меню Telegram
 def get_model_menu():
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     btn_gemini = telebot.types.KeyboardButton("🤖 Gemini 3.5")
     btn_llama = telebot.types.KeyboardButton("⚡ Llama 3.3")
     btn_deepseek = telebot.types.KeyboardButton("🧠 DeepSeek R1")
     btn_clear = telebot.types.KeyboardButton("🗑️ Очистить память")
-    # Красиво размещаем кнопки в два ряда
     markup.add(btn_gemini, btn_llama, btn_deepseek)
     markup.add(btn_clear)
     return markup
 
-# 4. Обработчики команд
-@bot.message_handler(commands=['start', 'help'])
+# --- ЗАЩИТА: Обработчик для посторонних пользователей ---
+@bot.message_handler(func=lambda message: not is_admin(message))
+def handle_unauthorized(message):
+    # Если пишет чужой человек, бот скрывает клавиатуру меню и вежливо отказывает
+    reply_markup = telebot.types.ReplyKeyboardRemove()
+    bot.reply_to(message, "🔒 Извините, этот бот является приватным. Доступ заблокирован.", reply_markup=reply_markup)
+
+# 4. Обработчики команд (Только для админа)
+@bot.message_handler(commands=['start', 'help'], func=is_admin)
 def send_welcome(message):
     user_id = message.from_user.id
     save_user_profile(user_id, 'gemini', [])
     bot.reply_to(
         message, 
-        "Привет! Переключайся между тремя нейросетями прямо на лету с помощью меню 👇", 
+        "Добро пожаловать, Хозяин! Вы зашли в режим управления приватным мультимодельным ботом. Меню переключения активно 👇", 
         reply_markup=get_model_menu()
     )
 
-# 5. Обработка системных кнопок меню
-@bot.message_handler(func=lambda message: message.text in ["🤖 Gemini 3.5", "⚡ Llama 3.3", "🧠 DeepSeek R1", "🗑️ Очистить память"])
+# 5. Обработка системных кнопок меню (Только для админа)
+@bot.message_handler(func=lambda message: message.text in ["🤖 Gemini 3.5", "⚡ Llama 3.3", "🧠 DeepSeek R1", "🗑️ Очистить память"] and is_admin(message))
 def handle_menu_buttons(message):
     user_id = message.from_user.id
     current_model, history = get_user_profile(user_id)
@@ -121,14 +136,14 @@ def handle_menu_buttons(message):
         
     elif message.text == "🧠 DeepSeek R1":
         save_user_profile(user_id, 'deepseek', history)
-        bot.reply_to(message, "Включен мыслящий DeepSeek R1 (через Groq) 🧠\nОн может отвечать чуть дольше, так как сначала обдумывает шаги решения.", reply_markup=get_model_menu())
+        bot.reply_to(message, "Включен мыслящий DeepSeek R1 (через Groq) 🧠\nОн думает над шагами решения чуть дольше.", reply_markup=get_model_menu())
         
     elif message.text == "🗑️ Очистить память":
         save_user_profile(user_id, current_model, [])
         bot.reply_to(message, f"Память для текущей модели успешно очищена!", reply_markup=get_model_menu())
 
-# 6. Основная логика диалога
-@bot.message_handler(func=lambda message: True)
+# 6. Основная логика диалога (Только для админа)
+@bot.message_handler(func=is_admin)
 def handle_message(message):
     user_id = message.from_user.id
     bot.send_chat_action(message.chat.id, 'typing')
@@ -155,7 +170,6 @@ def handle_message(message):
             ai_text = completion.choices.message.content
             
         elif chosen_model == 'deepseek':
-            # Отправляем тот же запрос в Groq, но запрашиваем "мозги" DeepSeek R1
             completion = groq_client.chat.completions.create(
                 model=MODEL_DEEPSEEK,
                 messages=history
@@ -174,5 +188,5 @@ if __name__ == "__main__":
     init_db()
     threading.Thread(target=run_web_server, daemon=True).start()
     bot.delete_webhook(drop_pending_updates=True)
-    print("Бот на 3 модели успешно запущен...")
+    print("Приватный мультимодельный бот успешно запущен...")
     bot.infinity_polling()
