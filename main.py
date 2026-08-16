@@ -25,7 +25,8 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-3.7-flash"
+MODEL_NAME = "gemini-3.5-flash"
+
 
 # ИСПРАВЛЕНИЕ: Кастомный кодировщик для обхода бага bytes в Gemini 3
 class GeminiJsonEncoder(json.JSONEncoder):
