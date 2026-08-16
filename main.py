@@ -1,62 +1,44 @@
 import os
 import json
 import threading
-from urllib.parse import urlparse
 from flask import Flask
 import telebot
 import psycopg2
 from google import genai
 from google.genai import types
 
-# 1. Инициализация Flask-сервера для Render
+# 1. Инициализация Flask-сервера для прохождения проверок порта Render
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Бот Gemini активен и подключен к Supabase через пулер!", 200
+    return "Бот Gemini активен и подключен к Supabase напрямую!", 200
 
 def run_web_server():
-    # Render передает необходимый порт в переменную окружения PORT
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# 2. Считывание конфигурации из переменных окружения Render
+# 2. Считывание конфигурации Telegram и Gemini
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-DATABASE_URL = os.environ.get("DATABASE_URL")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-2.5-flash"
 
-# 3. Безопасное подключение к Supabase
+# 3. Прямое подключение к Supabase по отдельным параметрам
 def get_db_connection():
-    """Подключение к БД с автоматическим парсингом URL для обхода проблем с сокетами."""
-    try:
-        # Пробуем стандартное прямое подключение
-        return psycopg2.connect(DATABASE_URL)
-    except Exception:
-        # Резервный разбор ссылки, если psycopg2 не смог распарсить параметры пулера автоматически
-        try:
-            result = urlparse(DATABASE_URL)
-            
-            # Отсекаем имя базы данных от параметров типа ?sslmode=...
-            dbname = result.path.lstrip('/')
-            if '?' in dbname:
-                dbname = dbname.split('?')[0]
-                
-            return psycopg2.connect(
-                database=dbname,
-                user=result.username,
-                password=result.password,
-                host=result.hostname,
-                port=result.port or 5432
-            )
-        except Exception as e:
-            raise RuntimeError(f"Критическая ошибка разбора DATABASE_URL: {e}")
+    """Подключение к базе данных без использования строки URL."""
+    return psycopg2.connect(
+        host=os.environ.get("DB_HOST"),
+        port=int(os.environ.get("DB_PORT", 6543)),
+        database=os.environ.get("DB_NAME", "postgres"),
+        user=os.environ.get("DB_USER"),
+        password=os.environ.get("DB_PASSWORD")
+    )
 
 def init_db():
-    """Создание таблицы для хранения истории диалогов, если её нет."""
+    """Создание таблицы для хранения истории диалогов, если её нет в Supabase."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -82,7 +64,7 @@ def load_chat_history(user_id):
         return []
         
     try:
-        # Извлекаем JSON-строку из кортежа результата БД
+        # Извлекаем JSON-строку из кортежа результата БД (строка лежит в первом элементе)
         raw_list = json.loads(row[0])
         # Восстанавливаем объекты Content, необходимые для работы чата Gemini
         return [types.Content(**content_dict) for content_dict in raw_list]
@@ -128,10 +110,10 @@ def handle_message(message):
     user_id = message.from_user.id
     
     try:
-        # Отправляем анимацию "Бот печатает..."
+        # Показываем анимацию "Бот печатает..."
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # Шаг 1: Загружаем прошлые реплики из базы данных
+        # Шаг 1: Загружаем прошлые реплики из базы данных Supabase
         history = load_chat_history(user_id)
         
         # Шаг 2: Инициализируем сессию чата Gemini с подгруженной историей
@@ -160,7 +142,7 @@ if __name__ == "__main__":
     # Проверяем и создаем структуру таблиц в Supabase
     init_db()
     
-    # Запускаем Flask веб-сервер в фоновом потоке для прохождения проверок Render Порта
+    # Запускаем Flask веб-сервер в фоновом потоке
     threading.Thread(target=run_web_server, daemon=True).start()
     
     print("Бот успешно запущен и слушает Telegram...")
