@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Бот Gemini активен, подключен к Supabase и вебхуки очищены!", 200
+    return "Бот Gemini активен, подключен к Supabase, работает на Gemini 3.7!", 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -24,9 +24,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-2.5-flash"
 
-# 3. Прямое подключение к Supabase по отдельным параметрам
+# ОБНОВЛЕНО: Переход на актуальную флагманскую модель поколения Gemini 3
+MODEL_NAME = "gemini-3.7-flash"
+
+# 3. Пнямое подключение к Supabase по отдельным параметрам
 def get_db_connection():
     """Подключение к базе данных без использования строки URL."""
     return psycopg2.connect(
@@ -96,7 +98,7 @@ def send_welcome(message):
     user_id = message.from_user.id
     # Очищаем историю принудительно при старте нового диалога
     save_chat_history(user_id, [])
-    bot.reply_to(message, "Привет! Я бот с бесконечной памятью диалога в базе Supabase. Напиши мне любой вопрос.")
+    bot.reply_to(message, "Привет! Я обновленный бот на базе Gemini 3.7 Flash с бесконечной памятью. Задай мне любой вопрос!")
 
 @bot.message_handler(commands=['clear'])
 def clear_memory(message):
@@ -135,7 +137,7 @@ def handle_message(message):
         bot.reply_to(message, response.text)
         
     except Exception as e:
-        bot.reply_to(message, f"Произошла ошибка при обработке: {str(e)}")
+        bot.reply_to(message, f"Произошла ошибка при обработке нейросетью: {str(e)}")
 
 # 6. Главная точка входа приложения
 if __name__ == "__main__":
@@ -145,10 +147,10 @@ if __name__ == "__main__":
     # Запускаем Flask веб-сервер в фоновом потоке
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # ПРИНУДИТЕЛЬНОЕ УДАЛЕНИЕ СТАРЫХ ВЕБХУКОВ ДЛЯ ИСПРАВЛЕНИЯ ОШИБКИ 409
+    # Принудительное удаление старых вебхуков для исключения конфликтов
     print("Удаляем конфликтующие вебхуки Telegram...")
     bot.delete_webhook(drop_pending_updates=True)
     
-    print("Бот успешно запущен и слушает Telegram...")
+    print("Бот успешно запущен на модели Gemini 3.7 и слушает Telegram...")
     # Старт бесконечного опроса Telegram
     bot.infinity_polling()
