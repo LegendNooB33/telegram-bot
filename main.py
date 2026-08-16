@@ -35,8 +35,9 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 # Названия моделей
 MODEL_GEMINI = "gemini-3.5-flash"
-MODEL_LLAMA = "llama-3.3-70b-versatile"
-MODEL_DEEPSEEK = "deepseek-r1-distill-llama-70b"
+MODEL_LLAMA = "openai/gpt-oss-120b"
+MODEL_DEEPSEEK = "qwen/qwen3.6-27b"
+
 
 # Функция-фильтр для проверки, что пишет именно создатель бота
 def is_admin(message):
