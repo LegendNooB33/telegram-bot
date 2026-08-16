@@ -1,111 +1,142 @@
 import os
-import logging
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
-import google.generativeai as genai
+import json
+import threading
+from flask import Flask
+import telebot
+import psycopg2
+from google import genai
+from google.genai import types
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# 1. Инициализация Flask-сервера для Render
+app = Flask(__name__)
 
-# Загрузка переменных окружения
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-PORT = int(os.getenv("PORT", 8080))
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+@app.route('/')
+def home():
+    return "Бот Gemini запущен и подключен к Supabase!", 200
 
-# --- НАСТРОЙКА БЕЛОГО СПИСКА (СПИСОК ТЕХ, КОМУ МОЖНО) ---
-# Замените числа ниже на свой ID (и ID друзей, если нужно, через запятую)
-ALLOWED_USERS = [1240110156] 
-# --------------------------------------------------------
+def run_web_server():
+    # На бесплатном тарифе Render обязан слушать порт
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
-WEBHOOK_PATH = f"/bot/{BOT_TOKEN}"
-WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+# 2. Считывание конфигурации из переменных окружения
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Инициализация бота и диспетчера
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
+MODEL_NAME = "gemini-2.5-flash"
 
-# Настройка Gemini API
-try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-3.5-flash')
-    logging.info("Gemini успешно настроен.")
-except Exception as e:
-    logging.error(f"Ошибка настройки Gemini: {e}")
+# 3. Функции для работы с базой данных Supabase
+def init_db():
+    """Создает таблицу в Supabase, если она еще не создана."""
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_history (
+            user_id BIGINT PRIMARY KEY,
+            history_json TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-@dp.message()
-async def handle_message(message: Message):
-    """Единый обработчик для текстовых сообщений и фото с проверкой доступа"""
+def load_chat_history(user_id):
+    """Извлекает JSON историю из БД и конвертирует её в объекты типов Gemini."""
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute("SELECT history_json FROM user_history WHERE user_id = %s;", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
     
-    # ПРОВЕРКА: Если ID пользователя нет в списке разрешенных
-    if message.from_user.id not in ALLOWED_USERS:
-        logging.warning(f"Попытка доступа от постороннего! ID: {message.from_user.id}, Username: @{message.from_user.username}")
-        await message.answer("Извините, этот бот приватный. У вас нет доступа к Gemini. 🔒")
-        return # Останавливаем функцию, дальше код выполняться не будет
-
-    # Дальше идет ваша стандартная рабочая логика бота...
-    prompt_parts = []
-    
-    if message.photo:
-        try:
-            await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-            photo = message.photo[-1]
-            photo_file = await message.bot.download(photo)
-            photo_bytes = photo_file.read()
-            
-            prompt_parts.append({
-                "mime_type": "image/jpeg",
-                "data": photo_bytes
-            })
-            
-            if message.caption:
-                prompt_parts.append(message.caption)
-            else:
-                prompt_parts.append("Что изображено на этом фото? Опиши подробно.")
-                
-        except Exception as e:
-            logging.error(f"Ошибка при скачивании фото: {e}")
-            await message.answer("Не удалось загрузить вашу картинку.")
-            return
-
-    elif message.text:
-        prompt_parts.append(message.text)
+    if not row:
+        return []
         
-    else:
-        await message.answer("Я умею обрабатывать только текст и фотографии! 📸")
-        return
-
     try:
-        await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-        response = model.generate_content(prompt_parts)
-        
-        if response.text:
-            await message.answer(response.text)
-        else:
-            await message.answer("Нейросеть вернула пустой ответ.")
+        # row[0] содержит строку JSON
+        raw_list = json.loads(row[0])
+        # Восстанавливаем типы Content, необходимые для SDK google-genai
+        return [types.Content(**content_dict) for content_dict in raw_list]
     except Exception as e:
-        logging.error(f"Ошибка при генерации текста: {e}")
-        await message.answer("Извините, не удалось обработать ваш запрос к Gemini.")
+        print(f"Ошибка чтения истории из БД для {user_id}: {e}")
+        return []
 
-async def on_startup(bot: Bot):
-    logging.info(f"Установка вебхука на URL: {WEBHOOK_URL}")
-    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-
-def main():
-    dp.startup.register(on_startup)
-    app = web.Application()
+def save_chat_history(user_id, history_objects):
+    """Конвертирует историю Gemini в JSON строку и сохраняет/обновляет запись в Supabase."""
+    # model_dump() переводит Pydantic объекты Gemini в обычные словари Python
+    serializable_history = [content.model_dump() for content in history_objects]
+    history_json = json.dumps(serializable_history)
     
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-    
-    logging.info(f"Запуск вебхука на порту {PORT}")
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO user_history (user_id, history_json)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET history_json = EXCLUDED.history_json;
+    """, (user_id, history_json))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
+# 4. Обработчики команд Telegram
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    # Очищаем историю переписки при старте
+    save_chat_history(user_id, [])
+    bot.reply_to(message, "Привет! Я бот с постоянной памятью в базе Supabase. Напиши мне что угодно!")
+
+@bot.message_handler(commands=['clear'])
+def clear_memory(message):
+    user_id = message.from_user.id
+    save_chat_history(user_id, [])
+    bot.reply_to(message, "История нашего диалога успешно стерта из базы данных!")
+
+# 5. Обработчик всех текстовых сообщений
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    user_id = message.from_user.id
+    
+    try:
+        # Показываем статус, что бот думает/пишет
+        bot.send_chat_action(message.chat.id, 'typing')
+        
+        # Шаг А: Загружаем предыдущие реплики из Supabase
+        history = load_chat_history(user_id)
+        
+        # Шаг Б: Инициализируем сессию чата Gemini с подгруженной историей
+        chat = ai_client.chats.create(
+            model=MODEL_NAME,
+            history=history
+        )
+        
+        # Шаг В: Отправляем новое сообщение в контексте диалога
+        response = chat.send_message(message.text)
+        
+        # Шаг Г: Получаем от Gemini обновленную историю (включая этот новый вопрос и ответ)
+        updated_history = chat.get_history()
+        
+        # Шаг Д: Перезаписываем обновленный список в Supabase
+        save_chat_history(user_id, updated_history)
+        
+        # Отправляем ответ пользователю
+        bot.reply_to(message, response.text)
+        
+    except Exception as e:
+        bot.reply_to(message, f"Произошла ошибка при обработке: {str(e)}")
+
+# 6. Точка входа приложения
 if __name__ == "__main__":
-    main()
+    # Сначала проверяем/создаем таблицу в облаке Supabase
+    init_db()
+    
+    # Запускаем Flask-сервер в фоновом потоке, чтобы Render не закрывал приложение
+    threading.Thread(target=run_web_server, daemon=True).start()
+    
+    print("Бот успешно инициализирован и слушает Telegram...")
+    # Запускаем бесконечный опрос серверов Telegram
+    bot.infinity_polling()
