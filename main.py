@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Бот Gemini активен и подключен к Supabase напрямую!", 200
+    return "Бот Gemini активен, подключен к Supabase и вебхуки очищены!", 200
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -144,6 +144,10 @@ if __name__ == "__main__":
     
     # Запускаем Flask веб-сервер в фоновом потоке
     threading.Thread(target=run_web_server, daemon=True).start()
+    
+    # ПРИНУДИТЕЛЬНОЕ УДАЛЕНИЕ СТАРЫХ ВЕБХУКОВ ДЛЯ ИСПРАВЛЕНИЯ ОШИБКИ 409
+    print("Удаляем конфликтующие вебхуки Telegram...")
+    bot.delete_webhook(drop_pending_updates=True)
     
     print("Бот успешно запущен и слушает Telegram...")
     # Старт бесконечного опроса Telegram
